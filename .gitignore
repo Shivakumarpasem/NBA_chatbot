@@ -16,3 +16,6 @@ code_docs/
 # OS / editor junk
 .DS_Store
 Thumbs.db
+
+*.md
+!README.md
