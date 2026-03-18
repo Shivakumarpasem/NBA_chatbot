@@ -1,0 +1,18 @@
+.env
+.chroma_db/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Don’t commit large/local data or generated indexes
+data/
+
+# Don’t commit documentation (keep only root README.md)
+docs/
+code_docs/
+*.docx
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
