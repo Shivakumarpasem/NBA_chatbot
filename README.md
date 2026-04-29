@@ -2,12 +2,6 @@
 
 Hybrid RAG + tool-calling assistant for NBA stats and history.
 
-## Screenshots
-
-![Search](assets/NBA_Chatbot.png)
-![Leaderboard](assets/NBA_Chatbot2.png)
-![Standings](assets/NBA_Chatbot3.png)
-
 ## Why I built this
 
 I wanted a chat-first way to explore sports data (starting with the NBA) while keeping the project practical: fast answers for stats/schedules, plus narrative/history questions using retrieval.
@@ -79,6 +73,12 @@ python scripts/fetch_nba_content.py
 **Close the Streamlit app first** so the Chroma cache can be cleared. Or delete `data/.chroma_db` after fetching.
 
 **To add news sources:** Edit `NEWS_SOURCES` in `scripts/fetch_nba_content.py`.
+
+## Screenshots
+
+![Search](assets/NBA_Chatbot.png)
+![Leaderboard](assets/NBA_Chatbot2.png)
+![Standings](assets/NBA_Chatbot3.png)
 
 ## Run Stats Tests Only (No LLM)
 
