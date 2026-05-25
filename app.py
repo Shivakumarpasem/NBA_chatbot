@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-# Preload models and data on first run (cached) — avoids slow first query
+# Preload models and data on first run (cached) - avoids slow first query
 @st.cache_resource
 def _warmup():
     from src.orchestrator import _load_df
@@ -43,7 +43,7 @@ st.set_page_config(page_title="NBA Chatbot", page_icon="🏀", layout="wide")
 _warmup()  # run once, cached
 
 st.title("🏀 NBA Chatbot")
-st.caption("Chat naturally—ask about schedules, stats, comparisons, or NBA history. I remember our conversation.")
+st.caption("Chat naturally-ask about schedules, stats, comparisons, or NBA history. I remember our conversation.")
 
 # Sidebar with tabs - no scrolling!
 with st.sidebar:

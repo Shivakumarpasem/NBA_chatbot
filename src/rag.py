@@ -1,6 +1,6 @@
 """
 RAG module: load NBA recaps, chunk, embed, store in Chroma, retrieve top-k chunks.
-Uses sentence-transformers (free, local) and Chroma (free) — no API cost.
+Uses sentence-transformers (free, local) and Chroma (free) - no API cost.
 """
 import hashlib
 from pathlib import Path

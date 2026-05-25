@@ -340,7 +340,7 @@ def get_player_gamelog(
 ) -> pd.DataFrame:
     """
     Get game-by-game stats for a player in a season.
-    Returns each game as a row — perfect for trend analysis.
+    Returns each game as a row - perfect for trend analysis.
     """
     try:
         from nba_api.stats.endpoints import playergamelog
@@ -542,7 +542,7 @@ def get_league_player_stats(
     per_mode: str = "PerGame",
 ) -> pd.DataFrame:
     """
-    Get stats for ALL NBA players in a season — the complete league dataset.
+    Get stats for ALL NBA players in a season - the complete league dataset.
     Perfect for analytics projects where you need every player's numbers.
     """
     try:
@@ -623,7 +623,7 @@ def get_all_time_leaders(stat: str = "PTS", limit: int = 25) -> pd.DataFrame:
 
 def get_player_career_full(player_name: str, season_type: str = "Regular Season") -> pd.DataFrame:
     """
-    Get complete career stats for a player across all seasons — every year as a row.
+    Get complete career stats for a player across all seasons - every year as a row.
     Great for career trajectory analysis.
     """
     try:

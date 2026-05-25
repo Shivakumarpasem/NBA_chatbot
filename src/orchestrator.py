@@ -414,7 +414,7 @@ def _extract_season_from_query(query: str) -> Optional[str]:
         if len(y2) <= 2:
             y2 = y1[:2] + y2.zfill(2)
         return f"{y1}-{y2}"
-    # "in 2024", "2024 season", "during 2016" — NBA season named by end year
+    # "in 2024", "2024 season", "during 2016" - NBA season named by end year
     m = re.search(r"(?:in|during|for|season)?\s*(20\d{2})\b", q)
     if m:
         year = int(m.group(1))
@@ -738,7 +738,7 @@ You have access to official NBA.com data covering 1946 to present.
 
 You can provide:
 - Player stats (any season, career, game-by-game logs)
-- Team roster stats (any team, any season) — downloadable as CSV
+- Team roster stats (any team, any season) - downloadable as CSV
 - Advanced metrics (PER, TS%, usage rate, offensive/defensive rating)
 - Draft history (any year, any team)
 - Player profiles (height, weight, college, draft info, nationality)
@@ -748,14 +748,14 @@ You can provide:
 
 CRITICAL OUTPUT RULES:
 1. Write ONLY a brief 1-2 sentence summary of the data.
-2. DO NOT create tables — the app adds them automatically.
-3. DO NOT use <details> tags — the app handles this.
+2. DO NOT create tables - the app adds them automatically.
+3. DO NOT use <details> tags - the app handles this.
 4. DO NOT list stats in bullet points.
 5. Summarize key findings in plain natural language.
 6. If data mentions "ready for download", tell the user to click the download button.
 
 GOOD RESPONSES:
-- "Stephen Curry averaged 27.4 PPG with the Warriors in 2024-25 — the full game log is ready to download."
+- "Stephen Curry averaged 27.4 PPG with the Warriors in 2024-25 - the full game log is ready to download."
 - "The 2003 NBA Draft had LeBron James #1 overall to Cleveland. Full draft table with all 58 picks is below."
 - "Giannis stands 6'11\", weighs 242 lbs, was drafted #15 overall by Milwaukee in 2013 from Greece."
 
@@ -820,7 +820,7 @@ def _gather_context(query: str, history: Optional[List[dict]]) -> str:
             except Exception:
                 pass
 
-    # News (when not using Google Search—fallback)
+    # News (when not using Google Search-fallback)
     if _is_news_query(query):
         try:
             from src.rag import retrieve
@@ -857,7 +857,7 @@ def _gather_context(query: str, history: Optional[List[dict]]) -> str:
     pname = parsed["player_name"]
     player_names = parsed.get("player_names") or ([pname] if pname else [])
 
-    # Handle player stats intents — loop over all named players
+    # Handle player stats intents - loop over all named players
     if intent.startswith("player_stats") and player_names:
         q_lower = query.lower()
         is_playoffs = any(w in q_lower for w in ["playoff", "playoffs", "postseason"])
@@ -906,7 +906,7 @@ def _gather_context(query: str, history: Optional[List[dict]]) -> str:
             if len(collected_player_names) > 1:
                 names_label = " vs ".join(collected_player_names)
                 filename = "_vs_".join(n.lower().replace(" ", "_") for n in collected_player_names)
-                label = f"{names_label} — {label_base}"
+                label = f"{names_label} - {label_base}"
             else:
                 filename = collected_player_names[0].lower().replace(" ", "_")
                 label = label_base
@@ -988,7 +988,7 @@ def _gather_context(query: str, history: Optional[List[dict]]) -> str:
             from src.nba_api_client import get_draft_class
             df = get_draft_class(year, team=team_filter)
             if not df.empty:
-                label = f"{year} NBA Draft{f' — {team_filter}' if team_filter else ''}"
+                label = f"{year} NBA Draft{f' - {team_filter}' if team_filter else ''}"
                 _DATAFRAME_STORAGE["dataframes"].append({
                     "df": df.copy(),
                     "filename": f"nba_draft_{year}{f'_{team_filter}' if team_filter else ''}",
@@ -1017,7 +1017,7 @@ def _gather_context(query: str, history: Optional[List[dict]]) -> str:
             from src.nba_api_client import get_advanced_player_stats
             df = get_advanced_player_stats(player_name=pname, season=season_nba, top_n=20)
             if not df.empty:
-                label = f"Advanced Stats — {'Top 20 Leaders' if not pname else pname}"
+                label = f"Advanced Stats - {'Top 20 Leaders' if not pname else pname}"
                 if season_nba:
                     label += f" ({season_nba})"
                 _DATAFRAME_STORAGE["dataframes"].append({
@@ -1046,7 +1046,7 @@ def _gather_context(query: str, history: Optional[List[dict]]) -> str:
                     "label": label,
                     "source": "NBA.com",
                 })
-                # Don't dump 500 rows to context — just tell Gemini it's ready
+                # Don't dump 500 rows to context - just tell Gemini it's ready
                 ctx_parts.append(
                     f"[{label}]\nFull dataset with {len(df)} players is ready for download. "
                     f"Columns: {', '.join(df.columns[:10])}... "
