@@ -308,6 +308,25 @@ def extract_team_abbrev(query: str) -> Optional[str]:
     return None
 
 
+def extract_multiple_teams(query: str) -> list:
+    """
+    Extract multiple team abbreviations when the query mentions more than one team.
+    Splits on 'and', 'vs', 'versus' and extracts a team from each part.
+    """
+    parts = re.split(r'\b(?:and|vs\.?|versus)\b', query, flags=re.IGNORECASE)
+    if len(parts) <= 1:
+        team = extract_team_abbrev(query)
+        return [team] if team else []
+    teams = []
+    seen = set()
+    for part in parts:
+        team = extract_team_abbrev(part.strip())
+        if team and team not in seen:
+            teams.append(team)
+            seen.add(team)
+    return teams
+
+
 def extract_draft_year(query: str) -> Optional[int]:
     """Extract NBA draft year from queries like '2003 draft' or 'draft class 2017'."""
     q = query.lower()
@@ -327,6 +346,26 @@ def extract_n_games(query: str) -> Optional[int]:
     if m:
         return int(m.group(1))
     return None
+
+
+def extract_multiple_players(query: str, history: list = None) -> list:
+    """
+    Extract multiple player names when the query mentions more than one.
+    Splits on 'and', 'vs', 'versus' and extracts a name from each part.
+    Returns a list with 1+ names, or empty list if none found.
+    """
+    parts = re.split(r'\b(?:and|vs\.?|versus)\b', query, flags=re.IGNORECASE)
+    if len(parts) <= 1:
+        name = extract_player_name(query, history)
+        return [name] if name else []
+    players = []
+    seen = set()
+    for part in parts:
+        name = extract_player_name(part.strip(), history)
+        if name and len(name) > 2 and name.lower() not in seen:
+            players.append(name)
+            seen.add(name.lower())
+    return players
 
 
 def extract_n_seasons(query: str) -> Optional[int]:
@@ -360,10 +399,12 @@ def parse_query(query: str, history: list = None) -> Dict[str, Any]:
         raw_query: str
     """
     intent, confidence = classify_intent(query)
-    player_name = extract_player_name(query, history)
+    player_names = extract_multiple_players(query, history)
+    player_name = player_names[0] if player_names else None
     season_year = extract_season_year(query)
     n_seasons = extract_n_seasons(query)
-    team_abbrev = extract_team_abbrev(query)
+    team_abbrevs = extract_multiple_teams(query)
+    team_abbrev = team_abbrevs[0] if team_abbrevs else None
     draft_year = extract_draft_year(query)
     n_games = extract_n_games(query)
 
@@ -402,9 +443,11 @@ def parse_query(query: str, history: list = None) -> Dict[str, Any]:
         "intent": intent,
         "confidence": confidence,
         "player_name": player_name,
+        "player_names": player_names,
         "season_year": season_year,
         "n_seasons": n_seasons,
         "team_abbrev": team_abbrev,
+        "team_abbrevs": team_abbrevs,          # full list, may have 2+
         "draft_year": draft_year,
         "n_games": n_games,
         "raw_query": query,

@@ -406,9 +406,57 @@ with st.sidebar:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-for msg in st.session_state.messages:
+
+def _render_export_ui(export_dfs, key_prefix: str):
+    """Render data preview + download buttons for a list of DataFrames."""
+    import io
+    st.markdown("---")
+    st.markdown("**📥 Export Data:**")
+    for idx, df_info in enumerate(export_dfs):
+        df = df_info["df"]
+        filename = df_info.get("filename", f"nba_data_{idx}")
+        label = df_info.get("label", f"Dataset {idx+1}")
+        source = df_info.get("source", "Unknown")
+
+        if len(export_dfs) > 1:
+            st.caption(f"**{label}**")
+
+        st.dataframe(df.head(5), use_container_width=True)
+        preview_rows = min(5, len(df))
+        st.caption(f"Showing {preview_rows} of {len(df)} rows · Source: {source} · Download for full dataset")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            csv = df.to_csv(index=False)
+            st.download_button(
+                label="📄 Download CSV",
+                data=csv,
+                file_name=f"{filename}.csv",
+                mime="text/csv",
+                key=f"csv_{key_prefix}_{idx}_{filename}",
+                use_container_width=True,
+            )
+        with col2:
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+                df.to_excel(writer, index=False, sheet_name="NBA Stats")
+            st.download_button(
+                label="📊 Download Excel",
+                data=buffer.getvalue(),
+                file_name=f"{filename}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"excel_{key_prefix}_{idx}_{filename}",
+                use_container_width=True,
+            )
+        if len(export_dfs) > 1 and idx < len(export_dfs) - 1:
+            st.markdown("")
+
+
+for msg_idx, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"], unsafe_allow_html=True)
+        if msg.get("export_dfs"):
+            _render_export_ui(msg["export_dfs"], key_prefix=f"hist_{msg_idx}")
 
 if prompt := st.chat_input("Ask about NBA stats or history..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
@@ -416,6 +464,7 @@ if prompt := st.chat_input("Ask about NBA stats or history..."):
     with st.chat_message("user"):
         st.markdown(prompt)
 
+    fresh_export_dfs = []
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
             try:
@@ -437,80 +486,28 @@ if prompt := st.chat_input("Ask about NBA stats or history..."):
                         label = df_info.get("label", "")
                         source = df_info.get("source", "Unknown")
                         
-                        try:
-                            markdown_table = df.to_markdown(index=False)
-                            if len(export_dfs) > 1:
-                                response += f"\n**{label}**\n\n"
-                            response += f"**Source:** `{source}`\n\n"
-                            response += f"""<details>
-<summary>📊 View Detailed Stats Table</summary>
-
-{markdown_table}
-
-</details>
-
-"""
-                        except Exception:
-                            pass
+                        if len(export_dfs) > 1:
+                            response += f"\n**{label}**\n\n"
                             
             except Exception as e:
                 err = str(e)
                 response = "Something went wrong. Please try again or rephrase." if err in ("object", "'object'", "") else f"Error: {err}"
         st.markdown(response, unsafe_allow_html=True)
-        
-        # Export UI - Show download buttons if DataFrames are available
+
+        # Export UI for the freshly generated response
+        fresh_export_dfs = []
         try:
             from src.orchestrator import get_export_dataframes
-            import io
-            
-            export_dfs = get_export_dataframes()
-            if export_dfs:
-                st.markdown("---")
-                st.markdown("**📥 Export Data:**")
-                
-                for idx, df_info in enumerate(export_dfs):
-                    df = df_info["df"]
-                    filename = df_info.get("filename", f"nba_data_{idx}")
-                    label = df_info.get("label", f"Dataset {idx+1}")
-                    source = df_info.get("source", "Unknown")
-                    
-                    if len(export_dfs) > 1:
-                        st.caption(f"**{label}**")
-                    st.caption(f"Source: {source}")
-                    
-                    col1, col2 = st.columns(2)
-                    
-                    # CSV download
-                    with col1:
-                        csv = df.to_csv(index=False)
-                        st.download_button(
-                            label="📄 Download CSV",
-                            data=csv,
-                            file_name=f"{filename}.csv",
-                            mime="text/csv",
-                            key=f"csv_{idx}_{filename}",
-                            use_container_width=True
-                        )
-                    
-                    # Excel download
-                    with col2:
-                        buffer = io.BytesIO()
-                        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                            df.to_excel(writer, index=False, sheet_name='NBA Stats')
-                        excel_data = buffer.getvalue()
-                        
-                        st.download_button(
-                            label="📊 Download Excel",
-                            data=excel_data,
-                            file_name=f"{filename}.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            key=f"excel_{idx}_{filename}",
-                            use_container_width=True
-                        )
-                    
-                    if len(export_dfs) > 1 and idx < len(export_dfs) - 1:
-                        st.markdown("")  # Spacing between multiple exports
+            fresh_export_dfs = get_export_dataframes() or []
+            if fresh_export_dfs:
+                msg_key = f"new_{len(st.session_state.messages)}"
+                _render_export_ui(fresh_export_dfs, key_prefix=msg_key)
         except Exception:
-            pass  # Silently fail if export not available
+            pass
 
-    st.session_state.messages.append({"role": "assistant", "content": response})
+    # Save message + any DataFrames so history rerenders them correctly
+    st.session_state.messages.append({
+        "role": "assistant",
+        "content": response,
+        "export_dfs": fresh_export_dfs if fresh_export_dfs else None,
+    })

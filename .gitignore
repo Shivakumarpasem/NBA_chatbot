@@ -17,5 +17,9 @@ code_docs/
 .DS_Store
 Thumbs.db
 
+# Editor temp files (Claude Code, etc.)
+*.tmp.*
+*.tmp
+
 *.md
 !README.md

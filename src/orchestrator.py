@@ -855,52 +855,72 @@ def _gather_context(query: str, history: Optional[List[dict]]) -> str:
     parsed = parse_query(query, history=hist)
     intent = parsed["intent"]
     pname = parsed["player_name"]
-    
-    # Handle player stats intents
-    if intent.startswith("player_stats") and pname:
+    player_names = parsed.get("player_names") or ([pname] if pname else [])
+
+    # Handle player stats intents — loop over all named players
+    if intent.startswith("player_stats") and player_names:
         q_lower = query.lower()
         is_playoffs = any(w in q_lower for w in ["playoff", "playoffs", "postseason"])
         season_type = "Post Season" if is_playoffs else "Regular Season"
         n_seasons = parsed["n_seasons"]
         season_year = parsed["season_year"]
-        season = None
-        label = ""
-        include_current = False
-        
+
         if intent == "player_stats_multi_season" and n_seasons:
-            label = f"Last {n_seasons} Seasons ({'Playoffs' if is_playoffs else 'Regular Season'})"
+            season = None
             include_current = False
+            label_base = f"Last {n_seasons} Seasons ({'Playoffs' if is_playoffs else 'Regular Season'})"
         elif intent == "player_stats_current":
-            label = f"Current Season ({'Playoffs' if is_playoffs else 'Regular Season'})"
+            season = None
             include_current = True
+            label_base = f"Current Season ({'Playoffs' if is_playoffs else 'Regular Season'})"
         elif intent == "player_stats_single_season" and season_year:
             season = f"{season_year - 1}-{season_year}"
-            label = f"{season} ({'Playoffs' if is_playoffs else 'Regular Season'})"
             include_current = False
+            label_base = f"{season} ({'Playoffs' if is_playoffs else 'Regular Season'})"
         else:
-            # General stats query = current season
-            label = f"Current Season ({'Playoffs' if is_playoffs else 'Regular Season'})"
+            season = None
             include_current = True
-        
-        result_df, player_full_name, source = _get_player_stats_universal(
-            pname, season=season, n_seasons=n_seasons, include_current=include_current, season_type=season_type
-        )
-        
-        if result_df is not None and not result_df.empty:
-            safe_name = player_full_name.lower().replace(" ", "_")
+            label_base = f"Current Season ({'Playoffs' if is_playoffs else 'Regular Season'})"
+
+        import pandas as _pd
+        collected_player_dfs = []
+        collected_player_names = []
+        last_source = "nba.com"
+
+        for pname in player_names:
+            result_df, player_full_name, source = _get_player_stats_universal(
+                pname, season=season, n_seasons=n_seasons, include_current=include_current, season_type=season_type
+            )
+            if result_df is not None and not result_df.empty:
+                last_source = source
+                df_tagged = result_df.copy()
+                if len(player_names) > 1:
+                    df_tagged.insert(0, "Player", player_full_name)
+                collected_player_dfs.append(df_tagged)
+                collected_player_names.append(player_full_name)
+                source_note = f" (Source: {source})" if source else ""
+                ctx_parts.append(f"[Stats for {player_full_name} - {label_base}{source_note}]\n{result_df.to_string(index=False)}")
+
+        if collected_player_dfs:
+            combined_df = _pd.concat(collected_player_dfs, ignore_index=True)
+            if len(collected_player_names) > 1:
+                names_label = " vs ".join(collected_player_names)
+                filename = "_vs_".join(n.lower().replace(" ", "_") for n in collected_player_names)
+                label = f"{names_label} — {label_base}"
+            else:
+                filename = collected_player_names[0].lower().replace(" ", "_")
+                label = label_base
             _DATAFRAME_STORAGE["dataframes"].append({
-                "df": result_df.copy(),
-                "filename": f"player_stats_{safe_name}_{label.replace(' ', '_')}",
+                "df": combined_df,
+                "filename": f"player_stats_{filename}_{label_base.replace(' ', '_')}",
                 "label": label,
-                "source": "NBA.com" if source == "nba.com" else "CSV fallback",
+                "source": "NBA.com" if last_source == "nba.com" else "CSV fallback",
             })
-            
-            source_note = f" (Source: {source})" if source else ""
-            ctx_parts.append(f"[Stats for {player_full_name} - {label}{source_note}]\n{result_df.to_string(index=False)}")
 
     # ── NEW: Team season stats ────────────────────────────────────────────────
-    if intent == "team_season_stats" and parsed.get("team_abbrev"):
-        team = parsed["team_abbrev"]
+    if intent == "team_season_stats" and parsed.get("team_abbrevs"):
+        import pandas as _pd
+        team_abbrevs = parsed["team_abbrevs"]
         sy = parsed.get("season_year")
         if sy:
             season_nba = f"{sy - 1}-{str(sy)[-2:]}"
@@ -911,16 +931,25 @@ def _gather_context(query: str, history: Optional[List[dict]]) -> str:
         stats_type = "advanced" if adv else "base"
         try:
             from src.nba_api_client import get_team_season_stats
-            df = get_team_season_stats(team, season_nba, stats_type=stats_type)
-            if not df.empty:
-                label = f"{team} {season_nba} {'Advanced ' if adv else ''}Stats"
+            collected_team_dfs = []
+            for team in team_abbrevs:
+                df = get_team_season_stats(team, season_nba, stats_type=stats_type)
+                if not df.empty:
+                    if len(team_abbrevs) > 1:
+                        df.insert(0, "Team", team)
+                    collected_team_dfs.append(df)
+                    ctx_parts.append(f"[{team} {season_nba} Stats ({len(df)} players)]\n{df.to_string(index=False)}")
+            if collected_team_dfs:
+                combined_df = _pd.concat(collected_team_dfs, ignore_index=True)
+                teams_str = " vs ".join(team_abbrevs)
+                filename_str = "_vs_".join(team_abbrevs)
+                label = f"{teams_str} {season_nba} {'Advanced ' if adv else ''}Stats"
                 _DATAFRAME_STORAGE["dataframes"].append({
-                    "df": df.copy(),
-                    "filename": f"{team}_{season_nba.replace('-', '_')}_stats",
+                    "df": combined_df,
+                    "filename": f"{filename_str}_{season_nba.replace('-', '_')}_stats",
                     "label": label,
                     "source": "NBA.com",
                 })
-                ctx_parts.append(f"[{label}  ({len(df)} players)]\n{df.to_string(index=False)}")
         except Exception:
             pass
 
