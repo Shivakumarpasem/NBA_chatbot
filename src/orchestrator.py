@@ -733,36 +733,36 @@ def _get_system_instruction() -> str:
     today = now.strftime("%Y-%m-%d")
     year = now.year
     season = f"{year}-{str(year+1)[-2:]}" if now.month >= 10 else f"{year-1}-{str(year)[-2:]}"
-    return f"""You are an NBA assistant. Today: {today}. Season: {season}.
+    return f"""You are an A-Z NBA assistant. Today: {today}. Current season: {season}.
+You have access to official NBA.com data covering 1946 to present.
+
+You can provide:
+- Player stats (any season, career, game-by-game logs)
+- Team roster stats (any team, any season) — downloadable as CSV
+- Advanced metrics (PER, TS%, usage rate, offensive/defensive rating)
+- Draft history (any year, any team)
+- Player profiles (height, weight, college, draft info, nationality)
+- Live standings, scores, schedules
+- NBA news, history, controversies (via web search)
+- Complete league-wide datasets for analytics projects
 
 CRITICAL OUTPUT RULES:
 1. Write ONLY a brief 1-2 sentence summary of the data.
-2. DO NOT create tables - the app will add tables automatically.
-3. DO NOT use <details> tags - the app handles this.
+2. DO NOT create tables — the app adds them automatically.
+3. DO NOT use <details> tags — the app handles this.
 4. DO NOT list stats in bullet points.
-5. Just summarize the key findings in plain text.
+5. Summarize key findings in plain natural language.
+6. If data mentions "ready for download", tell the user to click the download button.
 
-GOOD RESPONSE EXAMPLE:
-"Stephen Curry's stats for the 2024-25 and 2025-26 seasons show he averaged 27 points per game with GSW."
+GOOD RESPONSES:
+- "Stephen Curry averaged 27.4 PPG with the Warriors in 2024-25 — the full game log is ready to download."
+- "The 2003 NBA Draft had LeBron James #1 overall to Cleveland. Full draft table with all 58 picks is below."
+- "Giannis stands 6'11\", weighs 242 lbs, was drafted #15 overall by Milwaukee in 2013 from Greece."
 
-BAD RESPONSE (DO NOT DO THIS):
-"Here are the stats:
-| Season | PTS | AST |
-|--------|-----|-----|
-| 2025 | 1000 | 300 |"
+BAD (never do this):
+"Here are the stats: | Season | PTS | ..."
 
-RULES:
-- Use the data provided below. It is factual.
-- Keep responses concise - one or two sentences.
-- The detailed table will be shown automatically below your response.
-- If data has "Source: live_api", it's current season data from NBA.com.
-
-Example responses:
-- "LeBron James scored 1,500 points in the 2024-25 season with the Lakers."
-- "The comparison shows Durant has higher PPG (27.3) than LeBron (27.2), but LeBron has more career points."
-- "The Warriors' next 3 games are against the Lakers, Celtics, and Heat."
-
-DO NOT CREATE TABLES. JUST SUMMARIZE IN 1-2 SENTENCES."""
+DO NOT CREATE TABLES. SUMMARIZE IN 1-2 SENTENCES ONLY."""
 
 
 def _safe_gemini_text(resp) -> str:
@@ -898,6 +898,134 @@ def _gather_context(query: str, history: Optional[List[dict]]) -> str:
             source_note = f" (Source: {source})" if source else ""
             ctx_parts.append(f"[Stats for {player_full_name} - {label}{source_note}]\n{result_df.to_string(index=False)}")
 
+    # ── NEW: Team season stats ────────────────────────────────────────────────
+    if intent == "team_season_stats" and parsed.get("team_abbrev"):
+        team = parsed["team_abbrev"]
+        sy = parsed.get("season_year")
+        if sy:
+            season_nba = f"{sy - 1}-{str(sy)[-2:]}"
+        else:
+            _cy = __import__("src.nba_api_client", fromlist=["current_season_year"]).current_season_year()
+            season_nba = f"{_cy}-{str(_cy + 1)[-2:]}"
+        adv = any(w in query.lower() for w in ["advanced", "per ", "efficiency", "rating", "ts%"])
+        stats_type = "advanced" if adv else "base"
+        try:
+            from src.nba_api_client import get_team_season_stats
+            df = get_team_season_stats(team, season_nba, stats_type=stats_type)
+            if not df.empty:
+                label = f"{team} {season_nba} {'Advanced ' if adv else ''}Stats"
+                _DATAFRAME_STORAGE["dataframes"].append({
+                    "df": df.copy(),
+                    "filename": f"{team}_{season_nba.replace('-', '_')}_stats",
+                    "label": label,
+                    "source": "NBA.com",
+                })
+                ctx_parts.append(f"[{label}  ({len(df)} players)]\n{df.to_string(index=False)}")
+        except Exception:
+            pass
+
+    # ── NEW: Player game log ──────────────────────────────────────────────────
+    elif intent == "player_gamelog" and pname:
+        sy = parsed.get("season_year")
+        season_nba = f"{sy - 1}-{str(sy)[-2:]}" if sy else None
+        n_games = parsed.get("n_games")
+        is_playoffs = any(w in query.lower() for w in ["playoff", "playoffs", "postseason"])
+        stype = "Playoffs" if is_playoffs else "Regular Season"
+        try:
+            from src.nba_api_client import get_player_gamelog
+            df = get_player_gamelog(pname, season=season_nba, last_n=n_games, season_type=stype)
+            if not df.empty:
+                full_name = df.iloc[0]["Player"] if "Player" in df.columns else pname
+                label = f"{full_name} Game Log"
+                if season_nba:
+                    label += f" {season_nba}"
+                if n_games:
+                    label += f" (Last {n_games})"
+                _DATAFRAME_STORAGE["dataframes"].append({
+                    "df": df.copy(),
+                    "filename": f"{full_name.lower().replace(' ', '_')}_gamelog",
+                    "label": label,
+                    "source": "NBA.com",
+                })
+                ctx_parts.append(f"[{label}  ({len(df)} games)]\n{df.head(25).to_string(index=False)}")
+        except Exception:
+            pass
+
+    # ── NEW: Draft class ──────────────────────────────────────────────────────
+    elif intent == "draft_class" and parsed.get("draft_year"):
+        year = parsed["draft_year"]
+        team_filter = parsed.get("team_abbrev")
+        try:
+            from src.nba_api_client import get_draft_class
+            df = get_draft_class(year, team=team_filter)
+            if not df.empty:
+                label = f"{year} NBA Draft{f' — {team_filter}' if team_filter else ''}"
+                _DATAFRAME_STORAGE["dataframes"].append({
+                    "df": df.copy(),
+                    "filename": f"nba_draft_{year}{f'_{team_filter}' if team_filter else ''}",
+                    "label": label,
+                    "source": "NBA.com",
+                })
+                ctx_parts.append(f"[{label}  ({len(df)} picks)]\n{df.to_string(index=False)}")
+        except Exception:
+            pass
+
+    # ── NEW: Player bio ───────────────────────────────────────────────────────
+    elif intent == "player_bio" and pname:
+        try:
+            from src.nba_api_client import get_player_bio, bio_to_text
+            bio = get_player_bio(pname)
+            if bio:
+                ctx_parts.append(f"[Player Profile: {bio.get('name', pname)}]\n{bio_to_text(bio)}")
+        except Exception:
+            pass
+
+    # ── NEW: Advanced stats ───────────────────────────────────────────────────
+    elif intent == "advanced_stats":
+        sy = parsed.get("season_year")
+        season_nba = f"{sy - 1}-{str(sy)[-2:]}" if sy else None
+        try:
+            from src.nba_api_client import get_advanced_player_stats
+            df = get_advanced_player_stats(player_name=pname, season=season_nba, top_n=20)
+            if not df.empty:
+                label = f"Advanced Stats — {'Top 20 Leaders' if not pname else pname}"
+                if season_nba:
+                    label += f" ({season_nba})"
+                _DATAFRAME_STORAGE["dataframes"].append({
+                    "df": df.copy(),
+                    "filename": f"advanced_{(pname or 'leaders').lower().replace(' ', '_')}",
+                    "label": label,
+                    "source": "NBA.com",
+                })
+                ctx_parts.append(f"[{label}]\n{df.to_string(index=False)}")
+        except Exception:
+            pass
+
+    # ── NEW: Full league stats (all players) ──────────────────────────────────
+    elif intent == "league_stats":
+        sy = parsed.get("season_year")
+        season_nba = f"{sy - 1}-{str(sy)[-2:]}" if sy else None
+        adv = "advanced" in query.lower()
+        try:
+            from src.nba_api_client import get_league_player_stats
+            df = get_league_player_stats(season=season_nba, stats_type="advanced" if adv else "base")
+            if not df.empty:
+                label = f"All NBA Players {'Advanced ' if adv else ''}Stats ({season_nba or 'Current Season'})"
+                _DATAFRAME_STORAGE["dataframes"].append({
+                    "df": df.copy(),
+                    "filename": f"nba_all_players_{'advanced' if adv else 'stats'}_{season_nba or 'current'}",
+                    "label": label,
+                    "source": "NBA.com",
+                })
+                # Don't dump 500 rows to context — just tell Gemini it's ready
+                ctx_parts.append(
+                    f"[{label}]\nFull dataset with {len(df)} players is ready for download. "
+                    f"Columns: {', '.join(df.columns[:10])}... "
+                    f"Top 5 by scoring:\n{df.head(5).to_string(index=False)}"
+                )
+        except Exception:
+            pass
+
     # Comparison
     compare_names = _extract_compare_players(query)
     if compare_names:
@@ -979,7 +1107,11 @@ def run(query: str, use_llm: bool = True, history: Optional[List[dict]] = None) 
     try:
         from src.query_parser import classify_intent
         intent, _ = classify_intent(query)
-        is_stats_query = intent.startswith("player_stats") or intent == "team_roster_stats"
+        is_stats_query = intent.startswith("player_stats") or intent in (
+            "team_roster_stats", "team_season_stats",
+            "player_gamelog", "advanced_stats", "league_stats",
+            "player_bio", "draft_class",
+        )
     except Exception:
         is_stats_query = False
     

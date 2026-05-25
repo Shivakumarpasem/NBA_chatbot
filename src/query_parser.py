@@ -86,6 +86,63 @@ INTENT_EXAMPLES = {
         "latest nba news",
         "playoff schedule",
     ],
+    "team_season_stats": [
+        "gsw 2023-24 full team stats",
+        "celtics roster statistics 2022-23",
+        "warriors all players stats this season",
+        "give me lakers complete team stats",
+        "nuggets 2023 full season stats",
+        "download heat roster stats",
+        "bulls 2024 season statistics all players",
+        "show me spurs team numbers",
+    ],
+    "player_gamelog": [
+        "curry game by game stats 2024",
+        "lebron game log this season",
+        "giannis every game played 2024-25",
+        "show me each game tatum played",
+        "durant game by game stats",
+        "luka game log last 20 games",
+        "all games jokic played this year",
+    ],
+    "draft_class": [
+        "2003 nba draft",
+        "who was drafted by the warriors 2022",
+        "first overall pick 2019 draft",
+        "nba draft class 2017",
+        "who did lakers draft in 2010",
+        "draft history 2008",
+        "lebron draft year picks",
+    ],
+    "player_bio": [
+        "tell me about stephen curry",
+        "lebron james background info",
+        "how tall is giannis",
+        "where did kobe go to college",
+        "when was jordan drafted",
+        "curry jersey number",
+        "where is wemby from",
+        "what position does luka play",
+    ],
+    "advanced_stats": [
+        "curry advanced stats this season",
+        "lebron efficiency metrics 2024",
+        "giannis PER 2024-25",
+        "best true shooting percentage leaders",
+        "highest usage rate players",
+        "top offensive rating nba",
+        "net rating leaders this season",
+        "player impact estimate top 20",
+    ],
+    "league_stats": [
+        "all nba player stats 2023-24",
+        "full league player statistics download",
+        "every player stats this season",
+        "download all players scoring data",
+        "complete nba stats dataset 2024",
+        "all players points rebounds assists",
+        "full league per game stats",
+    ],
 }
 
 # Number words mapping
@@ -212,8 +269,61 @@ def extract_player_name(query: str, history: list = None) -> Optional[str]:
 
 
 def extract_season_year(query: str) -> Optional[int]:
-    """Extract a specific season year from query (e.g., 2021 from 'lebron 2021 stats')."""
+    """
+    Extract season END year from query.
+    '2023-2024' → 2024, '2023-24' → 2024, '2024' → 2024.
+    """
+    # Full range "2023-2024"
+    m = re.search(r'\b(20\d{2})-(20\d{2})\b', query)
+    if m:
+        return int(m.group(2))
+    # Short range "2023-24"
+    m = re.search(r'\b(20\d{2})-(\d{2})\b', query)
+    if m:
+        return int(m.group(1)[:2] + m.group(2))
+    # Single year "2024"
     m = re.search(r'\b(20\d{2})\b', query)
+    if m:
+        return int(m.group(1))
+    return None
+
+
+def extract_team_abbrev(query: str) -> Optional[str]:
+    """Extract team abbreviation from query text."""
+    try:
+        from src.nba_data import TEAM_ABBREVS
+        q = query.lower()
+        for alias, abbrev in sorted(TEAM_ABBREVS.items(), key=lambda x: -len(x[0])):
+            if len(alias) > 2 and alias in q:
+                return abbrev
+        # Also check raw 3-letter codes
+        for code in ["GSW", "LAL", "BOS", "CHI", "MIA", "NYK", "BKN", "PHX",
+                     "DEN", "MIL", "PHI", "CLE", "DAL", "MEM", "MIN", "SAC",
+                     "NOP", "OKC", "ORL", "POR", "SAS", "TOR", "UTA", "WAS",
+                     "ATL", "CHA", "DET", "HOU", "IND", "LAC"]:
+            if code.lower() in q.split() or code.lower() + " " in q:
+                return code
+    except Exception:
+        pass
+    return None
+
+
+def extract_draft_year(query: str) -> Optional[int]:
+    """Extract NBA draft year from queries like '2003 draft' or 'draft class 2017'."""
+    q = query.lower()
+    m = re.search(r'(\d{4})\s+(?:nba\s+)?draft', q)
+    if m:
+        return int(m.group(1))
+    m = re.search(r'draft(?:\s+class)?(?:\s+of)?\s+(\d{4})', q)
+    if m:
+        return int(m.group(1))
+    return None
+
+
+def extract_n_games(query: str) -> Optional[int]:
+    """Extract number of games: 'last 10 games' → 10."""
+    q = query.lower()
+    m = re.search(r'(?:last|past|recent)\s+(\d+)\s+games?', q)
     if m:
         return int(m.group(1))
     return None
@@ -237,31 +347,65 @@ def extract_n_seasons(query: str) -> Optional[int]:
 def parse_query(query: str, history: list = None) -> Dict[str, Any]:
     """
     Main entry point. Parses a user query into structured intent + entities.
-    
+
     Returns dict with:
-        intent: str (e.g., "player_stats_single_season")
+        intent: str
         confidence: float (0-1)
         player_name: Optional[str]
-        season_year: Optional[int] (e.g., 2021)
-        n_seasons: Optional[int] (e.g., 2)
+        season_year: Optional[int] (end year, e.g. 2024 for 2023-24)
+        n_seasons: Optional[int]
+        team_abbrev: Optional[str]
+        draft_year: Optional[int]
+        n_games: Optional[int]
         raw_query: str
     """
     intent, confidence = classify_intent(query)
     player_name = extract_player_name(query, history)
     season_year = extract_season_year(query)
     n_seasons = extract_n_seasons(query)
-    
+    team_abbrev = extract_team_abbrev(query)
+    draft_year = extract_draft_year(query)
+    n_games = extract_n_games(query)
+
+    q_lower = query.lower()
+
+    # Hard keyword overrides (highest priority)
+    advanced_kws = ["advanced stats", "advanced metric", "per ", "true shooting",
+                    "usage rate", "net rating", "off rating", "def rating",
+                    "offensive rating", "defensive rating", "pie score", "ts%", "usg%"]
+    if any(kw in q_lower for kw in advanced_kws):
+        intent = "advanced_stats"
+
     # Auto-correct intent based on extracted entities
-    if n_seasons and intent != "player_stats_multi_season":
+    elif draft_year:
+        intent = "draft_class"
+    elif n_seasons and intent not in ("player_stats_multi_season",):
         intent = "player_stats_multi_season"
-    if season_year and intent not in ("player_stats_single_season", "player_stats_multi_season"):
+    elif season_year and intent not in (
+        "player_stats_single_season", "player_stats_multi_season",
+        "team_season_stats", "player_gamelog", "league_stats", "draft_class",
+    ):
         intent = "player_stats_single_season"
-    
+
+    # "current season" / "this year" / "this season" → player_stats_current
+    if (intent in ("player_stats_general",) and
+            any(w in q_lower for w in ["current", "this season", "this year", "now", "today"])):
+        intent = "player_stats_current"
+
+    # If team found + stats keyword but no strong player intent → team season stats
+    if (team_abbrev and not intent.startswith("player_stats") and
+            intent not in ("team_season_stats", "team_schedule", "draft_class", "advanced_stats") and
+            any(w in q_lower for w in ["stats", "statistics", "numbers", "roster", "season", "players"])):
+        intent = "team_season_stats"
+
     return {
         "intent": intent,
         "confidence": confidence,
         "player_name": player_name,
         "season_year": season_year,
         "n_seasons": n_seasons,
+        "team_abbrev": team_abbrev,
+        "draft_year": draft_year,
+        "n_games": n_games,
         "raw_query": query,
     }
