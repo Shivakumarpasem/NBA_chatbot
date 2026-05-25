@@ -6,8 +6,10 @@ import json
 import os
 import re
 import sys
+import time
+import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 # Load .env from project root
 ROOT = Path(__file__).resolve().parents[1]
@@ -178,21 +180,29 @@ ROUTING_SYSTEM = """You are an NBA assistant. For STATS: use tools.
 
 CRITICAL: For any stats query, ALWAYS call the appropriate tool first. Then format the tool output as a table."""
 
-# Global storage for DataFrames (for export feature)
-_DATAFRAME_STORAGE = {
-    "dataframes": [],  # List of {"df": DataFrame, "filename": str, "label": str}
-    "enabled": False   # Set to True when export is requested
-}
+# ── Gemini rate limiter ───────────────────────────────────────────────────────
+# Free tier: 15 requests/min. We cap at 14 to stay safely under.
+_gemini_calls: List[float] = []
+_gemini_lock = threading.Lock()
+_GEMINI_RPM = 14
 
 
-def get_export_dataframes():
-    """Get stored DataFrames for export. Called by app.py."""
-    return _DATAFRAME_STORAGE["dataframes"]
-
-
-def clear_export_dataframes():
-    """Clear stored DataFrames. Called by app.py after export or on new query."""
-    _DATAFRAME_STORAGE["dataframes"] = []
+def _gemini_wait():
+    """Block until it is safe to make another Gemini API call."""
+    with _gemini_lock:
+        now = time.time()
+        # Drop timestamps older than 60 seconds
+        while _gemini_calls and now - _gemini_calls[0] >= 60:
+            _gemini_calls.pop(0)
+        if len(_gemini_calls) >= _GEMINI_RPM:
+            wait_for = 61 - (now - _gemini_calls[0])
+            if wait_for > 0:
+                time.sleep(wait_for)
+            # Re-prune after sleeping
+            now = time.time()
+            while _gemini_calls and now - _gemini_calls[0] >= 60:
+                _gemini_calls.pop(0)
+        _gemini_calls.append(time.time())
 
 
 def _get_player_stats_universal(
@@ -285,7 +295,7 @@ def _get_player_stats_universal(
     return result_df, player_full_name, source
 
 
-def _call_tool(name: str, args: Dict[str, Any]) -> str:
+def _call_tool(name: str, args: Dict[str, Any], out_dfs: list = None) -> str:
     from src.nba_data import (
         find_players,
         player_summary,
@@ -365,12 +375,13 @@ def _call_tool(name: str, args: Dict[str, Any]) -> str:
             filename = "_".join(filename_parts)
             label = args.get("seasons", [args.get("season", "")])[0] if "seasons" in args else args.get("season", "Data")
             
-            _DATAFRAME_STORAGE["dataframes"].append({
-                "df": data.copy(),
-                "filename": filename,
-                "label": label,
-                "source": "CSV fallback",
-            })
+            if out_dfs is not None:
+                out_dfs.append({
+                    "df": data.copy(),
+                    "filename": filename,
+                    "label": label,
+                    "source": "CSV fallback",
+                })
             
         # Return plain text for now - we'll format after Gemini's response
         return data.to_string(index=False)
@@ -781,9 +792,11 @@ def _safe_gemini_text(resp) -> str:
     return ""
 
 
-def _gather_context(query: str, history: Optional[List[dict]]) -> str:
-    """Fetch relevant data (schedule, stats, RAG, etc.) based on query. Returns context string for the LLM."""
+def _gather_context(query: str, history: Optional[List[dict]]) -> Tuple[str, list]:
+    """Fetch relevant data (schedule, stats, RAG, etc.) based on query.
+    Returns (context_string, dataframes_list) - both per-request, no globals."""
     ctx_parts = []
+    local_dfs: list = []   # collects DataFrames for this request only
     hist = history or []
 
     # Schedule
@@ -910,7 +923,7 @@ def _gather_context(query: str, history: Optional[List[dict]]) -> str:
             else:
                 filename = collected_player_names[0].lower().replace(" ", "_")
                 label = label_base
-            _DATAFRAME_STORAGE["dataframes"].append({
+            local_dfs.append({
                 "df": combined_df,
                 "filename": f"player_stats_{filename}_{label_base.replace(' ', '_')}",
                 "label": label,
@@ -944,7 +957,7 @@ def _gather_context(query: str, history: Optional[List[dict]]) -> str:
                 teams_str = " vs ".join(team_abbrevs)
                 filename_str = "_vs_".join(team_abbrevs)
                 label = f"{teams_str} {season_nba} {'Advanced ' if adv else ''}Stats"
-                _DATAFRAME_STORAGE["dataframes"].append({
+                local_dfs.append({
                     "df": combined_df,
                     "filename": f"{filename_str}_{season_nba.replace('-', '_')}_stats",
                     "label": label,
@@ -970,7 +983,7 @@ def _gather_context(query: str, history: Optional[List[dict]]) -> str:
                     label += f" {season_nba}"
                 if n_games:
                     label += f" (Last {n_games})"
-                _DATAFRAME_STORAGE["dataframes"].append({
+                local_dfs.append({
                     "df": df.copy(),
                     "filename": f"{full_name.lower().replace(' ', '_')}_gamelog",
                     "label": label,
@@ -989,7 +1002,7 @@ def _gather_context(query: str, history: Optional[List[dict]]) -> str:
             df = get_draft_class(year, team=team_filter)
             if not df.empty:
                 label = f"{year} NBA Draft{f' - {team_filter}' if team_filter else ''}"
-                _DATAFRAME_STORAGE["dataframes"].append({
+                local_dfs.append({
                     "df": df.copy(),
                     "filename": f"nba_draft_{year}{f'_{team_filter}' if team_filter else ''}",
                     "label": label,
@@ -1020,7 +1033,7 @@ def _gather_context(query: str, history: Optional[List[dict]]) -> str:
                 label = f"Advanced Stats - {'Top 20 Leaders' if not pname else pname}"
                 if season_nba:
                     label += f" ({season_nba})"
-                _DATAFRAME_STORAGE["dataframes"].append({
+                local_dfs.append({
                     "df": df.copy(),
                     "filename": f"advanced_{(pname or 'leaders').lower().replace(' ', '_')}",
                     "label": label,
@@ -1040,7 +1053,7 @@ def _gather_context(query: str, history: Optional[List[dict]]) -> str:
             df = get_league_player_stats(season=season_nba, stats_type="advanced" if adv else "base")
             if not df.empty:
                 label = f"All NBA Players {'Advanced ' if adv else ''}Stats ({season_nba or 'Current Season'})"
-                _DATAFRAME_STORAGE["dataframes"].append({
+                local_dfs.append({
                     "df": df.copy(),
                     "filename": f"nba_all_players_{'advanced' if adv else 'stats'}_{season_nba or 'current'}",
                     "label": label,
@@ -1081,7 +1094,7 @@ def _gather_context(query: str, history: Optional[List[dict]]) -> str:
         except Exception:
             pass
 
-    return "\n\n".join(ctx_parts) if ctx_parts else ""
+    return "\n\n".join(ctx_parts) if ctx_parts else "", local_dfs
 
 
 def _chat_conversational(
@@ -1110,6 +1123,7 @@ def _chat_conversational(
             has_stats_data = any(word in context.lower() for word in ['season', 'team', 'player', 'pts', 'ast', 'games'])
             reminder = "\n\n⚠️ REMEMBER: Format the data above as a summary + expandable table. See system instruction examples." if has_stats_data else ""
             current_text = f"[Data for this response]\n{context.strip()}{reminder}\n\n[User says]\n{query}"
+        _gemini_wait()
         if not genai_history:
             resp = model.generate_content(current_text)
         else:
@@ -1124,13 +1138,14 @@ def _chat_conversational(
         return f"Error: {err}"
 
 
-def run(query: str, use_llm: bool = True, history: Optional[List[dict]] = None) -> str:
-    # Clear any stored DataFrames from previous query
-    clear_export_dataframes()
-    
+def run(query: str, use_llm: bool = True, history: Optional[List[dict]] = None) -> Tuple[str, list]:
+    """
+    Main entry point. Returns (response_text, dataframes_list).
+    dataframes_list is per-request — no shared globals.
+    """
     api_key = _get_api_key()
     if not api_key and use_llm:
-        return "Add GOOGLE_API_KEY or GEMINI_API_KEY to your .env file. Get a free key at https://aistudio.google.com/apikey"
+        return "Add GOOGLE_API_KEY or GEMINI_API_KEY to your .env file. Get a free key at https://aistudio.google.com/apikey", []
 
     # Use embedding parser to check if this is a stats query (bypass web search for those)
     try:
@@ -1143,12 +1158,12 @@ def run(query: str, use_llm: bool = True, history: Optional[List[dict]] = None) 
         )
     except Exception:
         is_stats_query = False
-    
+
     # Live web queries: use Gemini with Google Search - but NOT for stats queries
     if not is_stats_query and _is_live_web_query(query) and use_llm and api_key:
-        return _chat_with_google_search(query, history, api_key)
+        return _chat_with_google_search(query, history, api_key), []
 
-    # Comparison hard fail: pass to chat for a friendly "couldn't find" message
+    # Comparison hard fail: pass to chat for a friendly message
     compare_names = _extract_compare_players(query)
     if compare_names:
         try:
@@ -1157,18 +1172,18 @@ def run(query: str, use_llm: bool = True, history: Optional[List[dict]] = None) 
                 "career": compare_names[2] is None, "season": compare_names[2] or "2023-2024",
             })
             if "Could not find" in r:
-                return _chat_conversational(query, history, r, api_key)
+                return _chat_conversational(query, history, r, api_key), []
         except Exception:
             pass
 
-    # Gather context and respond conversationally (single flow for all queries)
-    context = _gather_context(query, history)
+    # Gather context and respond conversationally
+    context, local_dfs = _gather_context(query, history)
     
     # If no context found from our data sources, use Google Search as fallback
     # This handles ANY question we don't have data for
     if not context.strip() and api_key:
-        return _chat_with_google_search(query, history, api_key)
-    
+        return _chat_with_google_search(query, history, api_key), []
+
     if not use_llm or not api_key:
-        return context or "Add GOOGLE_API_KEY to .env for full answers."
-    return _chat_conversational(query, history, context, api_key)
+        return context or "Add GOOGLE_API_KEY to .env for full answers.", local_dfs
+    return _chat_conversational(query, history, context, api_key), local_dfs

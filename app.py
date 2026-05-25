@@ -469,41 +469,25 @@ if prompt := st.chat_input("Ask about NBA stats or history..."):
         with st.spinner("Thinking..."):
             try:
                 history = [{"role": m["role"], "content": m["content"]} for m in st.session_state.messages[-10:]]
-                response = run(prompt, use_llm=True, history=history)
-                
-                # Append formatted tables to response if DataFrames exist
-                from src.orchestrator import get_export_dataframes
-                import re as _re
-                export_dfs = get_export_dataframes()
-                if export_dfs:
-                    # Strip any tables/details Gemini may have generated (we add our own)
+                response, fresh_export_dfs = run(prompt, use_llm=True, history=history)
+
+                # Strip any markdown tables Gemini may have added (we render our own)
+                if fresh_export_dfs:
+                    import re as _re
                     response = _re.sub(r'<details>.*?</details>', '', response, flags=_re.DOTALL).strip()
                     response = _re.sub(r'\|.*\|.*\n(\|[-: |]+\|\n)?(\|.*\|.*\n)*', '', response).strip()
-                    
-                    response += "\n\n"
-                    for idx, df_info in enumerate(export_dfs):
-                        df = df_info["df"]
-                        label = df_info.get("label", "")
-                        source = df_info.get("source", "Unknown")
-                        
-                        if len(export_dfs) > 1:
-                            response += f"\n**{label}**\n\n"
-                            
+
             except Exception as e:
                 err = str(e)
+                fresh_export_dfs = []
                 response = "Something went wrong. Please try again or rephrase." if err in ("object", "'object'", "") else f"Error: {err}"
+
         st.markdown(response, unsafe_allow_html=True)
 
         # Export UI for the freshly generated response
-        fresh_export_dfs = []
-        try:
-            from src.orchestrator import get_export_dataframes
-            fresh_export_dfs = get_export_dataframes() or []
-            if fresh_export_dfs:
-                msg_key = f"new_{len(st.session_state.messages)}"
-                _render_export_ui(fresh_export_dfs, key_prefix=msg_key)
-        except Exception:
-            pass
+        if fresh_export_dfs:
+            msg_key = f"new_{len(st.session_state.messages)}"
+            _render_export_ui(fresh_export_dfs, key_prefix=msg_key)
 
     # Save message + any DataFrames so history rerenders them correctly
     st.session_state.messages.append({

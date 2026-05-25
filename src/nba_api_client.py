@@ -6,11 +6,42 @@ All free, official data from NBA.com (1946 to present).
 """
 import time
 import re
+import threading
 from datetime import datetime
 from typing import Optional, Dict, List, Tuple
 import pandas as pd
 
 NBA_API_SLEEP = 0.7  # seconds between calls to avoid NBA.com rate limiting
+
+# ── Request lock: only one thread hits NBA.com at a time ─────────────────────
+_nba_request_lock = threading.Lock()
+
+# ── Simple in-memory cache ────────────────────────────────────────────────────
+# {cache_key: (data, fetched_at_timestamp)}
+_cache: dict = {}
+_cache_lock = threading.Lock()
+
+TTL_HISTORICAL = 86400   # 24 hours  - old seasons never change
+TTL_CURRENT    = 3600    # 1 hour    - current season updates during the day
+TTL_LIVE       = 60      # 60 seconds- live scores / today's games
+
+
+def _cache_get(key: str, ttl: int):
+    """Return cached value if it exists and is within TTL, else None."""
+    with _cache_lock:
+        entry = _cache.get(key)
+    if entry is None:
+        return None
+    data, ts = entry
+    if time.time() - ts < ttl:
+        return data
+    return None
+
+
+def _cache_set(key: str, data):
+    """Store a value in the cache with the current timestamp."""
+    with _cache_lock:
+        _cache[key] = (data, time.time())
 
 # ── Player nicknames ──────────────────────────────────────────────────────────
 PLAYER_NICKNAMES = {
@@ -161,6 +192,7 @@ ABBREV_NORMALIZE = {
 
 
 def _sleep():
+    """Sleep between NBA.com calls. Must be called inside _nba_request_lock."""
     time.sleep(NBA_API_SLEEP)
 
 
@@ -291,15 +323,23 @@ def get_team_season_stats(
         team_id = find_team_id(team_abbrev)
         measure = "Advanced" if stats_type == "advanced" else "Base"
 
-        _sleep()
-        stats = leaguedashplayerstats.LeagueDashPlayerStats(
-            season=season_str,
-            per_mode_detailed=per_mode,
-            measure_type_detailed_defense=measure,
-            season_type_all_star="Regular Season",
-            team_id_nullable=team_id or "",
-            timeout=30,
-        )
+        cache_key = f"team_season_{team_abbrev}_{season_str}_{stats_type}_{per_mode}"
+        cur = parse_season(None)
+        ttl = TTL_CURRENT if season_str == cur else TTL_HISTORICAL
+        cached = _cache_get(cache_key, ttl)
+        if cached is not None:
+            return cached
+
+        with _nba_request_lock:
+            _sleep()
+            stats = leaguedashplayerstats.LeagueDashPlayerStats(
+                season=season_str,
+                per_mode_detailed=per_mode,
+                measure_type_detailed_defense=measure,
+                season_type_all_star="Regular Season",
+                team_id_nullable=team_id or "",
+                timeout=30,
+            )
         df = stats.get_data_frames()[0]
         if df.empty:
             return pd.DataFrame()
@@ -327,7 +367,9 @@ def get_team_season_stats(
         available = {k: v for k, v in cols.items() if k in df.columns}
         result = df[list(available.keys())].rename(columns=available)
         sort_col = "MIN" if "MIN" in result.columns else result.columns[-1]
-        return result.sort_values(sort_col, ascending=False).reset_index(drop=True)
+        result = result.sort_values(sort_col, ascending=False).reset_index(drop=True)
+        _cache_set(cache_key, result)
+        return result
     except Exception:
         return pd.DataFrame()
 
@@ -351,13 +393,21 @@ def get_player_gamelog(
         player_id, full_name = player_info
         season_str = parse_season(season)
 
-        _sleep()
-        log = playergamelog.PlayerGameLog(
-            player_id=player_id,
-            season=season_str,
-            season_type_all_star=season_type,
-            timeout=30,
-        )
+        cache_key = f"gamelog_{player_id}_{season_str}_{season_type}_{last_n}"
+        cur = parse_season(None)
+        ttl = TTL_CURRENT if season_str == cur else TTL_HISTORICAL
+        cached = _cache_get(cache_key, ttl)
+        if cached is not None:
+            return cached
+
+        with _nba_request_lock:
+            _sleep()
+            log = playergamelog.PlayerGameLog(
+                player_id=player_id,
+                season=season_str,
+                season_type_all_star=season_type,
+                timeout=30,
+            )
         df = log.get_data_frames()[0]
         if df.empty:
             return pd.DataFrame()
@@ -376,7 +426,9 @@ def get_player_gamelog(
 
         if last_n:
             result = result.head(last_n)
-        return result.reset_index(drop=True)
+        result = result.reset_index(drop=True)
+        _cache_set(cache_key, result)
+        return result
     except Exception:
         return pd.DataFrame()
 
@@ -389,12 +441,18 @@ def get_draft_class(year: int, team: str = None) -> pd.DataFrame:
     try:
         from nba_api.stats.endpoints import drafthistory
 
-        _sleep()
-        draft = drafthistory.DraftHistory(
-            season_year_nullable=str(year),
-            league_id="00",
-            timeout=30,
-        )
+        cache_key = f"draft_{year}_{team}"
+        cached = _cache_get(cache_key, TTL_HISTORICAL)
+        if cached is not None:
+            return cached
+
+        with _nba_request_lock:
+            _sleep()
+            draft = drafthistory.DraftHistory(
+                season_year_nullable=str(year),
+                league_id="00",
+                timeout=30,
+            )
         df = draft.get_data_frames()[0]
         if df.empty:
             return pd.DataFrame()
@@ -411,7 +469,9 @@ def get_draft_class(year: int, team: str = None) -> pd.DataFrame:
         if team and "Team" in result.columns:
             result = result[result["Team"].str.upper() == team.upper()]
 
-        return result.sort_values("Pick").reset_index(drop=True)
+        result = result.sort_values("Pick").reset_index(drop=True)
+        _cache_set(cache_key, result)
+        return result
     except Exception:
         return pd.DataFrame()
 
@@ -428,8 +488,14 @@ def get_player_bio(player_name: str) -> Optional[Dict]:
             return None
         player_id, full_name = player_info
 
-        _sleep()
-        info = commonplayerinfo.CommonPlayerInfo(player_id=player_id, timeout=30)
+        cache_key = f"bio_{player_id}"
+        cached = _cache_get(cache_key, TTL_HISTORICAL)
+        if cached is not None:
+            return cached
+
+        with _nba_request_lock:
+            _sleep()
+            info = commonplayerinfo.CommonPlayerInfo(player_id=player_id, timeout=30)
         df = info.get_data_frames()[0]
         if df.empty:
             return None
@@ -459,6 +525,7 @@ def get_player_bio(player_name: str) -> Optional[Dict]:
             "draft_pick": g("DRAFT_NUMBER"),
             "status": "Active" if g("ROSTERSTATUS") == "Active" else "Inactive/Retired",
         }
+        _cache_set(cache_key, bio)
         return bio
     except Exception:
         return None
@@ -498,28 +565,36 @@ def get_advanced_player_stats(
         from nba_api.stats.endpoints import leaguedashplayerstats
 
         season_str = parse_season(season)
-        _sleep()
-        stats = leaguedashplayerstats.LeagueDashPlayerStats(
-            season=season_str,
-            per_mode_detailed="PerGame",
-            measure_type_detailed_defense="Advanced",
-            season_type_all_star="Regular Season",
-            timeout=30,
-        )
-        df = stats.get_data_frames()[0]
-        if df.empty:
-            return pd.DataFrame()
-
-        cols = {
-            "PLAYER_NAME": "Player", "TEAM_ABBREVIATION": "Team", "AGE": "Age",
-            "GP": "GP", "MIN": "MIN",
-            "OFF_RATING": "OffRtg", "DEF_RATING": "DefRtg", "NET_RATING": "NetRtg",
-            "TS_PCT": "TS%", "USG_PCT": "USG%", "AST_PCT": "AST%",
-            "REB_PCT": "REB%", "EFG_PCT": "eFG%",
-            "OREB_PCT": "OREB%", "DREB_PCT": "DREB%", "PIE": "PIE",
-        }
-        available = {k: v for k, v in cols.items() if k in df.columns}
-        result = df[list(available.keys())].rename(columns=available)
+        cache_key = f"advanced_{season_str}"
+        cur = parse_season(None)
+        ttl = TTL_CURRENT if season_str == cur else TTL_HISTORICAL
+        cached = _cache_get(cache_key, ttl)
+        if cached is not None:
+            result = cached
+        else:
+            with _nba_request_lock:
+                _sleep()
+                stats = leaguedashplayerstats.LeagueDashPlayerStats(
+                    season=season_str,
+                    per_mode_detailed="PerGame",
+                    measure_type_detailed_defense="Advanced",
+                    season_type_all_star="Regular Season",
+                    timeout=30,
+                )
+            df = stats.get_data_frames()[0]
+            if df.empty:
+                return pd.DataFrame()
+            cols = {
+                "PLAYER_NAME": "Player", "TEAM_ABBREVIATION": "Team", "AGE": "Age",
+                "GP": "GP", "MIN": "MIN",
+                "OFF_RATING": "OffRtg", "DEF_RATING": "DefRtg", "NET_RATING": "NetRtg",
+                "TS_PCT": "TS%", "USG_PCT": "USG%", "AST_PCT": "AST%",
+                "REB_PCT": "REB%", "EFG_PCT": "eFG%",
+                "OREB_PCT": "OREB%", "DREB_PCT": "DREB%", "PIE": "PIE",
+            }
+            available = {k: v for k, v in cols.items() if k in df.columns}
+            result = df[list(available.keys())].rename(columns=available)
+            _cache_set(cache_key, result)
 
         if player_name:
             resolved = resolve_player_name(player_name)
@@ -550,14 +625,23 @@ def get_league_player_stats(
 
         season_str = parse_season(season)
         measure = "Advanced" if stats_type == "advanced" else "Base"
-        _sleep()
-        stats = leaguedashplayerstats.LeagueDashPlayerStats(
-            season=season_str,
-            per_mode_detailed=per_mode,
-            measure_type_detailed_defense=measure,
-            season_type_all_star="Regular Season",
-            timeout=30,
-        )
+
+        cache_key = f"league_{season_str}_{stats_type}_{per_mode}"
+        cur = parse_season(None)
+        ttl = TTL_CURRENT if season_str == cur else TTL_HISTORICAL
+        cached = _cache_get(cache_key, ttl)
+        if cached is not None:
+            return cached
+
+        with _nba_request_lock:
+            _sleep()
+            stats = leaguedashplayerstats.LeagueDashPlayerStats(
+                season=season_str,
+                per_mode_detailed=per_mode,
+                measure_type_detailed_defense=measure,
+                season_type_all_star="Regular Season",
+                timeout=30,
+            )
         df = stats.get_data_frames()[0]
         if df.empty:
             return pd.DataFrame()
@@ -586,7 +670,9 @@ def get_league_player_stats(
         available = {k: v for k, v in cols.items() if k in df.columns}
         result = df[list(available.keys())].rename(columns=available)
         sort_col = "PTS" if "PTS" in result.columns else ("PIE" if "PIE" in result.columns else result.columns[-1])
-        return result.sort_values(sort_col, ascending=False).reset_index(drop=True)
+        result = result.sort_values(sort_col, ascending=False).reset_index(drop=True)
+        _cache_set(cache_key, result)
+        return result
     except Exception:
         return pd.DataFrame()
 
