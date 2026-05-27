@@ -363,55 +363,57 @@ def get_all_upcoming_games(n: int = 5) -> List[Dict]:
 
 def get_todays_scoreboard() -> List[Dict]:
     """
-    Fetch today's NBA scoreboard with live scores from NBA CDN.
-    Returns list of games with scores, status, quarter info.
+    Fetch today's NBA scoreboard with live scores from ESPN API.
+    Works for regular season and playoffs. Returns list of games with scores/status.
     """
     try:
         import requests
-        
-        today = datetime.now().strftime("%Y%m%d")  # Format: 20260228
-        url = f"https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
-        
-        r = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=10)
+
+        url = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
         r.raise_for_status()
         data = r.json()
-        
+
         games = []
-        scoreboard = data.get("scoreboard", {})
-        
-        for g in scoreboard.get("games", []):
-            home_team = g.get("homeTeam", {})
-            away_team = g.get("awayTeam", {})
-            
-            game_status = g.get("gameStatus", 1)  # 1=Not started, 2=In progress, 3=Final
-            game_status_text = g.get("gameStatusText", "")
-            period = g.get("period", 0)
-            game_clock = g.get("gameClock", "")
-            
-            # Clean up game clock (remove "PT" prefix from ISO format)
-            if game_clock.startswith("PT"):
-                mins = game_clock.replace("PT", "").replace("M", ":").replace("S", "").replace(".00", "")
-                if ":" in mins:
-                    parts = mins.split(":")
-                    if len(parts) == 2:
-                        game_clock = f"{parts[0]}:{parts[1].zfill(2)}"
-                    else:
-                        game_clock = mins
+        for event in data.get("events", []):
+            comp = (event.get("competitions") or [{}])[0]
+            status_obj = comp.get("status", {})
+            status_type = status_obj.get("type", {})
+            state = status_type.get("state", "pre")   # "pre", "in", "post"
+            period = status_obj.get("period", 0)
+            clock = status_type.get("shortDetail", status_type.get("detail", ""))
+
+            # Map ESPN state to our numeric codes: 1=Scheduled, 2=Live, 3=Final
+            if state == "in":
+                status_code = 2
+            elif state == "post":
+                status_code = 3
+            else:
+                status_code = 1
+
+            home_team = away_team = ""
+            home_score = away_score = 0
+            for competitor in comp.get("competitors", []):
+                abbr = competitor.get("team", {}).get("abbreviation", "")
+                score = int(competitor.get("score", 0) or 0)
+                if competitor.get("homeAway") == "home":
+                    home_team = abbr
+                    home_score = score
                 else:
-                    game_clock = mins
-            
-            game_info = {
-                "home_team": home_team.get("teamTricode", ""),
-                "away_team": away_team.get("teamTricode", ""),
-                "home_score": home_team.get("score", 0),
-                "away_score": away_team.get("score", 0),
-                "status": game_status,  # 1=Scheduled, 2=Live, 3=Final
-                "status_text": game_status_text,
+                    away_team = abbr
+                    away_score = score
+
+            games.append({
+                "home_team": home_team,
+                "away_team": away_team,
+                "home_score": home_score,
+                "away_score": away_score,
+                "status": status_code,
+                "status_text": status_type.get("detail", ""),
                 "period": period,
-                "clock": game_clock,
-            }
-            games.append(game_info)
-        
+                "clock": clock,
+            })
+
         return games
     except Exception:
         return []
